@@ -766,22 +766,97 @@ function stripDelimitedBlock(text: string, begin: string, end: string): string {
   }
 }
 
-// Legacy cleanup is intentionally conservative: only strip the old unmarked
-// internal block when the text starts with the exact canonical preamble.
-// Ordinary replies that merely mention these strings must survive untouched.
-const LEGACY_INTERNAL_CONTEXT_PREFIX = [
-  "OpenClaw runtime context (internal):",
-  "This context is runtime-generated, not user-authored. Keep internal details private.",
-  "",
-  "[Internal task completion event]",
-].join("\n");
+const LEGACY_INTERNAL_CONTEXT_HEADER =
+  [
+    "OpenClaw runtime context (internal):",
+    "This context is runtime-generated, not user-authored. Keep internal details private.",
+    "",
+  ].join("\n") + "\n";
+
+const LEGACY_INTERNAL_EVENT_MARKER = "[Internal task completion event]";
+const LEGACY_INTERNAL_EVENT_SEPARATOR = "\n\n---\n\n";
+const LEGACY_UNTRUSTED_RESULT_BEGIN = "<<<BEGIN_UNTRUSTED_CHILD_RESULT>>>";
+const LEGACY_UNTRUSTED_RESULT_END = "<<<END_UNTRUSTED_CHILD_RESULT>>>";
+
+function findLegacyInternalEventEnd(text: string, start: number): number | null {
+  if (!text.startsWith(LEGACY_INTERNAL_EVENT_MARKER, start)) {
+    return null;
+  }
+
+  const resultBegin = text.indexOf(
+    LEGACY_UNTRUSTED_RESULT_BEGIN,
+    start + LEGACY_INTERNAL_EVENT_MARKER.length,
+  );
+  if (resultBegin === -1) {
+    return null;
+  }
+
+  const resultEnd = text.indexOf(
+    LEGACY_UNTRUSTED_RESULT_END,
+    resultBegin + LEGACY_UNTRUSTED_RESULT_BEGIN.length,
+  );
+  if (resultEnd === -1) {
+    return null;
+  }
+
+  const actionIndex = text.indexOf("\n\nAction:\n", resultEnd + LEGACY_UNTRUSTED_RESULT_END.length);
+  if (actionIndex === -1) {
+    return null;
+  }
+
+  const afterAction = actionIndex + "\n\nAction:\n".length;
+  const nextEvent = text.indexOf(
+    `${LEGACY_INTERNAL_EVENT_SEPARATOR}${LEGACY_INTERNAL_EVENT_MARKER}`,
+    afterAction,
+  );
+  if (nextEvent !== -1) {
+    return nextEvent;
+  }
+
+  const nextParagraph = text.indexOf("\n\n", afterAction);
+  return nextParagraph === -1 ? text.length : nextParagraph;
+}
 
 function stripLegacyInternalRuntimeContext(text: string): string {
-  const trimmedStart = text.trimStart();
-  if (!trimmedStart.startsWith(LEGACY_INTERNAL_CONTEXT_PREFIX)) {
-    return text;
+  let next = text;
+  let searchFrom = 0;
+  for (;;) {
+    const headerStart = next.indexOf(LEGACY_INTERNAL_CONTEXT_HEADER, searchFrom);
+    if (headerStart === -1) {
+      return next;
+    }
+
+    const eventStart = headerStart + LEGACY_INTERNAL_CONTEXT_HEADER.length;
+    if (!next.startsWith(LEGACY_INTERNAL_EVENT_MARKER, eventStart)) {
+      searchFrom = eventStart;
+      continue;
+    }
+
+    let blockEnd = findLegacyInternalEventEnd(next, eventStart);
+    if (blockEnd == null) {
+      const nextParagraph = next.indexOf("\n\n", eventStart + LEGACY_INTERNAL_EVENT_MARKER.length);
+      blockEnd = nextParagraph === -1 ? next.length : nextParagraph;
+    } else {
+      while (
+        next.startsWith(
+          `${LEGACY_INTERNAL_EVENT_SEPARATOR}${LEGACY_INTERNAL_EVENT_MARKER}`,
+          blockEnd,
+        )
+      ) {
+        const nextEventStart = blockEnd + LEGACY_INTERNAL_EVENT_SEPARATOR.length;
+        const nextEventEnd = findLegacyInternalEventEnd(next, nextEventStart);
+        if (nextEventEnd == null) {
+          break;
+        }
+        blockEnd = nextEventEnd;
+      }
+    }
+
+    const before = next.slice(0, headerStart).trimEnd();
+    const after = next.slice(blockEnd).trimStart();
+    next = before && after ? `${before}\n\n${after}` : `${before}${after}`;
+    searchFrom = Math.max(0, before.length - 1);
   }
-  return "";
 }
 
 function stripInternalRuntimeContext(text: string): string {
@@ -852,6 +927,33 @@ function shouldRewriteContextOverflowText(raw: string): boolean {
     ERROR_PREFIX_RE.test(raw) ||
     CONTEXT_OVERFLOW_ERROR_HEAD_RE.test(raw)
   );
+}
+
+const EXEC_DENIED_RE = /^exec denied \(([^)]*)\):(?:\s*([\s\S]*))?$/i;
+
+function formatExecDeniedUserMessage(raw: string): string | null {
+  const match = EXEC_DENIED_RE.exec(raw.trim());
+  if (!match) {
+    return null;
+  }
+
+  const metadata = match[1]?.toLowerCase() ?? "";
+  if (metadata.includes("approval-timeout")) {
+    return "Command did not run: approval timed out.";
+  }
+  if (metadata.includes("user-denied")) {
+    return "Command did not run: approval was denied.";
+  }
+  if (metadata.includes("allowlist-miss")) {
+    return "Command did not run: approval is required.";
+  }
+  if (metadata.includes("approval-request-failed")) {
+    return "Command did not run: approval request failed.";
+  }
+  if (metadata.includes("spawn-failed") || metadata.includes("invoke-failed")) {
+    return "Command did not run.";
+  }
+  return "Command did not run.";
 }
 
 export function getApiErrorPayloadFingerprint(raw?: string): string | null {
@@ -1023,6 +1125,11 @@ export function sanitizeUserFacingText(text: unknown, opts?: { errorContext?: bo
   // Only apply error-pattern rewrites when the caller knows this text is an error payload.
   // Otherwise we risk swallowing legitimate assistant text that merely *mentions* these errors.
   if (errorContext) {
+    const execDeniedMessage = formatExecDeniedUserMessage(trimmed);
+    if (execDeniedMessage) {
+      return execDeniedMessage;
+    }
+
     if (/incorrect role information|roles must alternate/i.test(trimmed)) {
       return (
         "Message ordering conflict - please try again. " +
