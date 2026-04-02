@@ -30,7 +30,7 @@ export function formatTaskTerminalMessage(task: TaskRecord): string {
   const title = resolveTaskDisplayTitle(task);
   const runLabel = resolveTaskRunLabel(task);
   const summary = sanitizeTaskStatusText(task.terminalSummary, {
-    errorContext: task.status !== "succeeded",
+    errorContext: task.status !== "succeeded" || task.terminalOutcome === "blocked",
   });
   if (task.status === "succeeded") {
     if (task.terminalOutcome === "blocked") {
@@ -69,7 +69,8 @@ export function formatTaskBlockedFollowupMessage(task: TaskRecord): string | nul
   const title = resolveTaskDisplayTitle(task);
   const runLabel = resolveTaskRunLabel(task);
   const summary =
-    sanitizeTaskStatusText(task.terminalSummary) || "Task is blocked and needs follow-up.";
+    sanitizeTaskStatusText(task.terminalSummary, { errorContext: true }) ||
+    "Task is blocked and needs follow-up.";
   return `Task needs follow-up: ${title}${runLabel}. ${summary}`;
 }
 

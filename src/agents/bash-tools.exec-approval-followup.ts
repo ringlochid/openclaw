@@ -2,6 +2,7 @@ import { resolveExternalBestEffortDeliveryTarget } from "../infra/outbound/best-
 import { sendMessage } from "../infra/outbound/message.js";
 import { isCronSessionKey, isSubagentSessionKey } from "../sessions/session-key-utils.js";
 import { isGatewayMessageChannel, normalizeMessageChannel } from "../utils/message-channel.js";
+import { sanitizeUserFacingText } from "./pi-embedded-helpers/errors.js";
 import { callGatewayTool } from "./tools/gateway.js";
 
 type ExecApprovalFollowupParams = {
@@ -13,6 +14,10 @@ type ExecApprovalFollowupParams = {
   turnSourceThreadId?: string | number;
   resultText: string;
 };
+
+const EXEC_DENIED_RE = /^exec denied \(([^)]*)\):(?:\s*([\s\S]*))?$/i;
+const EXEC_FINISHED_RE = /^exec finished \(([^)]*)\)(?:\n([\s\S]*))?$/i;
+const EXEC_COMPLETED_RE = /^exec completed:\s*([\s\S]*)$/i;
 
 function buildExecDeniedFollowupPrompt(resultText: string): string {
   return [
@@ -32,7 +37,7 @@ function buildExecDeniedFollowupPrompt(resultText: string): string {
 
 export function buildExecApprovalFollowupPrompt(resultText: string): string {
   const trimmed = resultText.trim();
-  if (trimmed.startsWith("Exec denied (")) {
+  if (isExecDeniedResult(trimmed)) {
     return buildExecDeniedFollowupPrompt(trimmed);
   }
   return [
@@ -51,11 +56,45 @@ export function buildExecApprovalFollowupPrompt(resultText: string): string {
 }
 
 function isExecDeniedResult(resultText: string): boolean {
-  return resultText.trim().startsWith("Exec denied (");
+  return EXEC_DENIED_RE.test(resultText.trim());
 }
 
 function shouldSuppressExecDeniedFollowup(sessionKey: string | undefined): boolean {
   return isSubagentSessionKey(sessionKey) || isCronSessionKey(sessionKey);
+}
+
+function formatDirectExecApprovalFollowupText(resultText: string): string | null {
+  const trimmed = resultText.trim();
+  if (!trimmed || isExecDeniedResult(trimmed)) {
+    return null;
+  }
+
+  const finishedMatch = EXEC_FINISHED_RE.exec(trimmed);
+  if (finishedMatch) {
+    const metadata = finishedMatch[1]?.toLowerCase() ?? "";
+    const body = sanitizeUserFacingText(finishedMatch[2] ?? "", {
+      errorContext: !metadata.includes("code 0"),
+    }).trim();
+
+    let prefix = "";
+    if (!body) {
+      prefix = metadata.includes("code 0")
+        ? "Background command finished."
+        : metadata.includes("signal")
+          ? "Background command stopped unexpectedly."
+          : "Background command finished with an error.";
+    }
+
+    return body ? `${prefix ? `${prefix}\n\n` : ""}${body}` : prefix || null;
+  }
+
+  const completedMatch = EXEC_COMPLETED_RE.exec(trimmed);
+  if (completedMatch) {
+    const body = sanitizeUserFacingText(completedMatch[1] ?? "", { errorContext: true }).trim();
+    return body || "Background command finished.";
+  }
+
+  return sanitizeUserFacingText(trimmed, { errorContext: true }).trim() || null;
 }
 
 export async function sendExecApprovalFollowup(
@@ -115,13 +154,14 @@ export async function sendExecApprovalFollowup(
     return true;
   }
 
-  if (deliveryTarget.deliver && !isDenied) {
+  const directText = formatDirectExecApprovalFollowupText(resultText);
+  if (deliveryTarget.deliver && directText) {
     await sendMessage({
       channel: deliveryTarget.channel,
       to: deliveryTarget.to ?? "",
       accountId: deliveryTarget.accountId,
       threadId: deliveryTarget.threadId,
-      content: resultText,
+      content: directText,
       agentId: undefined,
       idempotencyKey: `exec-approval-followup:${params.approvalId}`,
     });

@@ -120,6 +120,15 @@ describe("task status formatting", () => {
     expect(formatTaskStatusDetail(task)).toBe("Needs login approval.");
   });
 
+  it("redacts raw exec denial detail from terminal task status", () => {
+    const task = makeTask({
+      status: "succeeded",
+      terminalOutcome: "blocked",
+      terminalSummary: "Exec denied (gateway id=req-1, approval-timeout): bash -lc ls",
+    });
+
+    expect(formatTaskStatusDetail(task)).toBe("Command did not run: approval timed out.");
+  });
   it("sanitizes free-form task status text for reuse in other surfaces", () => {
     expect(
       sanitizeTaskStatusText(

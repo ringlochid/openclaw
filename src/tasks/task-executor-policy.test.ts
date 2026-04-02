@@ -102,6 +102,22 @@ describe("task-executor-policy", () => {
     expect(formatTaskStateChangeMessage(blockedTask, progressEvent)).toBeNull();
   });
 
+  it("redacts raw exec denial text from blocked task updates", () => {
+    const blockedTask = createTask({
+      status: "succeeded",
+      terminalOutcome: "blocked",
+      terminalSummary: "Exec denied (gateway id=req-1, approval-timeout): bash -lc ls",
+      runId: "run-1234567890",
+      label: "ACP import",
+    });
+
+    expect(formatTaskTerminalMessage(blockedTask)).toBe(
+      "Background task blocked: ACP import (run run-1234). Command did not run: approval timed out.",
+    );
+    expect(formatTaskBlockedFollowupMessage(blockedTask)).toBe(
+      "Task needs follow-up: ACP import (run run-1234). Command did not run: approval timed out.",
+    );
+  });
   it("keeps delivery policy decisions explicit", () => {
     expect(
       shouldAutoDeliverTaskTerminalUpdate(
