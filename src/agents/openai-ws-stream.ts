@@ -32,6 +32,7 @@ import * as piAi from "@mariozechner/pi-ai";
 import {
   OpenAIWebSocketManager,
   type FunctionToolDefinition,
+  type OpenAIResponsesAssistantPhase,
   type OpenAIWebSocketManagerOptions,
 } from "./openai-ws-connection.js";
 import {
@@ -71,6 +72,23 @@ type OpenAIWsStreamDeps = {
   createManager: (options?: OpenAIWebSocketManagerOptions) => OpenAIWebSocketManager;
   streamSimple: typeof piAi.streamSimple;
 };
+
+type AssistantMessageWithPhase = AssistantMessage & { phase?: OpenAIResponsesAssistantPhase };
+
+function normalizeAssistantPhase(value: unknown): OpenAIResponsesAssistantPhase | undefined {
+  return value === "commentary" || value === "final_answer" ? value : undefined;
+}
+
+function encodeAssistantTextSignature(params: {
+  id: string;
+  phase?: OpenAIResponsesAssistantPhase;
+}): string {
+  return JSON.stringify({
+    v: 1,
+    id: params.id,
+    ...(params.phase ? { phase: params.phase } : {}),
+  });
+}
 
 const defaultOpenAIWsStreamDeps: OpenAIWsStreamDeps = {
   createManager: (options) => new OpenAIWebSocketManager(options),
@@ -542,11 +560,53 @@ export function createOpenAIWebSocketStreamFn(
       });
 
       // ── 5. Wait for response.completed ───────────────────────────────────
+      const outputItemPhaseById = new Map<string, OpenAIResponsesAssistantPhase | undefined>();
+      const emitTextDelta = (params: {
+        fullText: string;
+        deltaText: string;
+        itemId?: string;
+        contentIndex?: number;
+      }) => {
+        const resolvedItemId = params.itemId;
+        const contentIndex = params.contentIndex ?? 0;
+        const itemPhase = resolvedItemId
+          ? normalizeAssistantPhase(outputItemPhaseById.get(resolvedItemId))
+          : undefined;
+        const partialBase = buildAssistantMessageWithZeroUsage({
+          model,
+          content: [
+            {
+              type: "text",
+              text: params.fullText,
+              ...(resolvedItemId
+                ? {
+                    textSignature: encodeAssistantTextSignature({
+                      id: resolvedItemId,
+                      ...(itemPhase ? { phase: itemPhase } : {}),
+                    }),
+                  }
+                : {}),
+            },
+          ],
+          stopReason: "stop",
+        });
+        const partialMsg: AssistantMessageWithPhase = itemPhase
+          ? ({ ...partialBase, phase: itemPhase } as AssistantMessageWithPhase)
+          : partialBase;
+        eventStream.push({
+          type: "text_delta",
+          contentIndex,
+          delta: params.deltaText,
+          partial: partialMsg,
+        });
+      };
       const capturedContextLength = context.messages.length;
 
       await new Promise<void>((resolve, reject) => {
         // Honour abort signal
         const abortHandler = () => {
+          outputItemPhaseById.clear();
+          outputTextByPart.clear();
           cleanup();
           reject(new Error("aborted"));
         };
@@ -558,6 +618,8 @@ export function createOpenAIWebSocketStreamFn(
 
         // If the WebSocket drops mid-request, reject so we don't hang forever.
         const closeHandler = (code: number, reason: string) => {
+          outputItemPhaseById.clear();
+          outputTextByPart.clear();
           cleanup();
           reject(
             new Error(`WebSocket closed mid-request (code=${code}, reason=${reason || "unknown"})`),
@@ -571,7 +633,56 @@ export function createOpenAIWebSocketStreamFn(
           unsubscribe();
         };
 
+        const outputTextByPart = new Map<string, string>();
+        const getOutputTextKey = (itemId: string, contentIndex: number) =>
+          `${itemId}:${contentIndex}`;
+
         const unsubscribe = session.manager.onMessage((event) => {
+          if (
+            event.type === "response.output_item.added" ||
+            event.type === "response.output_item.done"
+          ) {
+            if (typeof event.item.id === "string") {
+              const itemPhase =
+                event.item.type === "message"
+                  ? normalizeAssistantPhase((event.item as { phase?: unknown }).phase)
+                  : undefined;
+              outputItemPhaseById.set(event.item.id, itemPhase);
+            }
+            return;
+          }
+
+          if (event.type === "response.output_text.delta") {
+            const key = getOutputTextKey(event.item_id, event.content_index);
+            const nextText = `${outputTextByPart.get(key) ?? ""}${event.delta}`;
+            outputTextByPart.set(key, nextText);
+            emitTextDelta({
+              fullText: nextText,
+              deltaText: event.delta,
+              itemId: event.item_id,
+              contentIndex: event.content_index,
+            });
+            return;
+          }
+
+          if (event.type === "response.output_text.done") {
+            const key = getOutputTextKey(event.item_id, event.content_index);
+            const previousText = outputTextByPart.get(key) ?? "";
+            if (event.text && event.text !== previousText) {
+              outputTextByPart.set(key, event.text);
+              const deltaText = event.text.startsWith(previousText)
+                ? event.text.slice(previousText.length)
+                : event.text;
+              emitTextDelta({
+                fullText: event.text,
+                deltaText,
+                itemId: event.item_id,
+                contentIndex: event.content_index,
+              });
+            }
+            return;
+          }
+
           if (event.type === "response.completed") {
             cleanup();
             // Update session state
@@ -582,30 +693,23 @@ export function createOpenAIWebSocketStreamFn(
               provider: model.provider,
               id: model.id,
             });
+            outputItemPhaseById.clear();
+            outputTextByPart.clear();
             const reason: Extract<StopReason, "stop" | "length" | "toolUse"> =
               assistantMsg.stopReason === "toolUse" ? "toolUse" : "stop";
             eventStream.push({ type: "done", reason, message: assistantMsg });
             resolve();
           } else if (event.type === "response.failed") {
             cleanup();
+            outputItemPhaseById.clear();
+            outputTextByPart.clear();
             const errMsg = event.response?.error?.message ?? "Response failed";
             reject(new Error(`OpenAI WebSocket response failed: ${errMsg}`));
           } else if (event.type === "error") {
             cleanup();
+            outputItemPhaseById.clear();
+            outputTextByPart.clear();
             reject(new Error(`OpenAI WebSocket error: ${event.message} (code=${event.code})`));
-          } else if (event.type === "response.output_text.delta") {
-            // Stream partial text updates for responsive UI
-            const partialMsg: AssistantMessage = buildAssistantMessageWithZeroUsage({
-              model,
-              content: [{ type: "text", text: event.delta }],
-              stopReason: "stop",
-            });
-            eventStream.push({
-              type: "text_delta",
-              contentIndex: 0,
-              delta: event.delta,
-              partial: partialMsg,
-            });
           }
         });
       });
