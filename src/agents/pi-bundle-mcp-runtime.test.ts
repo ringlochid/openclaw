@@ -95,6 +95,25 @@ describe("session MCP runtime", () => {
     expect(validator({ url: 42 }).valid).toBe(false);
   });
 
+  it("tolerates non-draft date-time output strings from external MCP catalogs", () => {
+    const validator = createBundleMcpJsonSchemaValidator().getValidator<{
+      updated_at: string;
+    }>({
+      type: "object",
+      properties: {
+        updated_at: { type: "string", format: "date-time" },
+      },
+      required: ["updated_at"],
+      additionalProperties: false,
+    });
+
+    expect(validator({ updated_at: "2026-05-15T12:53:09" })).toEqual({
+      valid: true,
+      data: { updated_at: "2026-05-15T12:53:09" },
+      errorMessage: undefined,
+    });
+  });
+
   it("keeps colliding sanitized tool definitions stable across catalog order changes", async () => {
     const catalogA = [
       { toolName: "alpha?", description: "question" },

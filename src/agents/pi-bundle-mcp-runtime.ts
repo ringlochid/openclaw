@@ -53,12 +53,26 @@ type Ajv2020Like = {
   errorsText: (errors?: ErrorObject[] | null) => string;
 };
 
+type AjvLike = {
+  compile: (schema: JsonSchemaType) => ValidateFunction;
+  errorsText: (errors?: ErrorObject[] | null) => string;
+};
+
 function isDraft202012Schema(schema: JsonSchemaType): boolean {
   return (schema as { $schema?: unknown }).$schema === DRAFT_2020_12_SCHEMA;
 }
 
 export function createBundleMcpJsonSchemaValidator(): jsonSchemaValidator {
-  const defaultValidator = new AjvJsonSchemaValidator();
+  const AjvCtor = require("ajv") as new (opts?: object) => AjvLike;
+  const addFormats = require("ajv-formats") as (ajv: AjvLike) => void;
+  const ajv = new AjvCtor({
+    strict: false,
+    validateFormats: false,
+    validateSchema: false,
+    allErrors: true,
+  });
+  addFormats(ajv);
+  const defaultValidator = new AjvJsonSchemaValidator(ajv as never);
   const Ajv2020Ctor = require("ajv/dist/2020") as new (opts?: object) => Ajv2020Like;
   const ajv2020 = new Ajv2020Ctor({
     strict: false,
