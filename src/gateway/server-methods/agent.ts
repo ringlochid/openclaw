@@ -602,6 +602,7 @@ export const agentHandlers: GatewayRequestHandlers = {
       timeout?: number;
       bestEffortDeliver?: boolean;
       cleanupBundleMcpOnRunEnd?: boolean;
+      sessionScopedMcpServers?: Record<string, unknown>;
       label?: string;
       inputProvenance?: InputProvenance;
       workspaceDir?: string;
@@ -611,6 +612,17 @@ export const agentHandlers: GatewayRequestHandlers = {
     const allowModelOverride = resolveAllowModelOverrideFromClient(client);
     const canResetSession = resolveCanResetSessionFromClient(client);
     const canUseInternalRuntimeHandoff = resolveCanUseInternalRuntimeHandoff(client);
+    if (request.sessionScopedMcpServers && !canUseInternalRuntimeHandoff) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          "sessionScopedMcpServers is reserved for backend callers.",
+        ),
+      );
+      return;
+    }
     const requestedModelOverride = Boolean(request.provider || request.model);
     const isRawModelRun = request.modelRun === true || request.promptMode === "none";
     if (requestedModelOverride && !allowModelOverride) {
@@ -1215,7 +1227,9 @@ export const agentHandlers: GatewayRequestHandlers = {
     if (wantsDelivery && resolvedChannel === INTERNAL_MESSAGE_CHANNEL) {
       const cfgResolved = cfgForAgent ?? cfg;
       try {
-        const selection = await resolveMessageChannelSelection({ cfg: cfgResolved });
+        const selection = await resolveMessageChannelSelection({
+          cfg: cfgResolved,
+        });
         resolvedChannel = selection.channel;
         deliveryTargetMode = deliveryTargetMode ?? "implicit";
         effectivePlan = {
@@ -1495,6 +1509,9 @@ export const agentHandlers: GatewayRequestHandlers = {
               internalEvents: request.internalEvents,
             }),
             cleanupBundleMcpOnRunEnd: request.cleanupBundleMcpOnRunEnd,
+            ...(request.sessionScopedMcpServers
+              ? { sessionScopedMcpServers: request.sessionScopedMcpServers }
+              : {}),
             abortSignal: activeRunAbort.controller.signal,
             // Internal-only: allow workspace override for spawned subagent runs.
             workspaceDir: resolveIngressWorkspaceOverrideForSpawnedRun({
@@ -1591,7 +1608,9 @@ export const agentHandlers: GatewayRequestHandlers = {
         agentId: identity.agentId,
         basePath: cfg.gateway?.controlUi?.basePath,
       }) ?? identity.avatar;
-    const avatarResolution = resolveAgentAvatar(cfg, identity.agentId, { includeUiOverride: true });
+    const avatarResolution = resolveAgentAvatar(cfg, identity.agentId, {
+      includeUiOverride: true,
+    });
     respond(
       true,
       {
@@ -1666,8 +1685,14 @@ export const agentHandlers: GatewayRequestHandlers = {
     });
 
     const first = await Promise.race([
-      lifecyclePromise.then((snapshot) => ({ source: "lifecycle" as const, snapshot })),
-      dedupePromise.then((snapshot) => ({ source: "dedupe" as const, snapshot })),
+      lifecyclePromise.then((snapshot) => ({
+        source: "lifecycle" as const,
+        snapshot,
+      })),
+      dedupePromise.then((snapshot) => ({
+        source: "dedupe" as const,
+        snapshot,
+      })),
     ]);
 
     let snapshot: AgentWaitTerminalSnapshot | Awaited<ReturnType<typeof waitForAgentJob>> =

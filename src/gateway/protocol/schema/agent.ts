@@ -136,6 +136,25 @@ export const PollParamsSchema = Type.Object(
   { additionalProperties: false },
 );
 
+const GatewayAgentMcpServerSchema = Type.Object(
+  {
+    command: Type.Optional(Type.String()),
+    args: Type.Optional(Type.Array(Type.String())),
+    env: Type.Optional(
+      Type.Record(Type.String(), Type.Union([Type.String(), Type.Number(), Type.Boolean()])),
+    ),
+    cwd: Type.Optional(Type.String()),
+    workingDirectory: Type.Optional(Type.String()),
+    url: Type.Optional(Type.String()),
+    transport: Type.Optional(Type.Union([Type.Literal("sse"), Type.Literal("streamable-http")])),
+    headers: Type.Optional(
+      Type.Record(Type.String(), Type.Union([Type.String(), Type.Number(), Type.Boolean()])),
+    ),
+    connectionTimeoutMs: Type.Optional(Type.Number({ minimum: 0 })),
+  },
+  { additionalProperties: true },
+);
+
 export const AgentParamsSchema = Type.Object(
   {
     message: NonEmptyString,
@@ -163,6 +182,13 @@ export const AgentParamsSchema = Type.Object(
     // Backward-compatible no-op. Older CLI clients sent this field on gateway
     // agent requests; the gateway accepts but intentionally ignores it.
     cleanupBundleMcpOnRunEnd: Type.Optional(Type.Boolean()),
+    /**
+     * Backend-only run-scoped MCP server overlay merged into the effective
+     * MCP config for this agent run only. Not persisted to shared config.
+     */
+    sessionScopedMcpServers: Type.Optional(
+      Type.Record(NonEmptyString, GatewayAgentMcpServerSchema),
+    ),
     modelRun: Type.Optional(Type.Boolean()),
     promptMode: Type.Optional(
       Type.Union([Type.Literal("full"), Type.Literal("minimal"), Type.Literal("none")]),

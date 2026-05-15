@@ -8,6 +8,8 @@ import {
 } from "../auto-reply/thinking.js";
 import { formatCliCommand } from "../cli/command-format.js";
 import type { CliDeps } from "../cli/deps.types.js";
+import { normalizeConfiguredMcpServers } from "../config/mcp-config-normalize.js";
+import { applyMergePatch } from "../config/merge-patch.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import {
   clearAgentRunContext,
@@ -291,9 +293,18 @@ async function prepareAgentCommandExecution(
     throw new Error("Pass --to <E.164>, --session-id, or --agent to choose a session");
   }
 
-  const { cfg } = await resolveAgentRuntimeConfig(runtime, {
+  const { cfg: resolvedCfg } = await resolveAgentRuntimeConfig(runtime, {
     runtimeTargetsChannelSecrets: opts.deliver === true,
   });
+  let cfg = resolvedCfg;
+  const sessionScopedMcpServers = normalizeConfiguredMcpServers(opts.sessionScopedMcpServers);
+  if (Object.keys(sessionScopedMcpServers).length > 0) {
+    cfg = applyMergePatch(cfg, {
+      mcp: {
+        servers: sessionScopedMcpServers,
+      },
+    }) as OpenClawConfig;
+  }
   const normalizedSpawned = normalizeSpawnedRunMetadata({
     spawnedBy: opts.spawnedBy,
     groupId: opts.groupId,
@@ -802,7 +813,11 @@ async function agentCommandInternal(
         if (!visibilityPolicy.allowsKey(key)) {
           const { updated } = applyModelOverrideToSessionEntry({
             entry,
-            selection: { provider: defaultProvider, model: defaultModel, isDefault: true },
+            selection: {
+              provider: defaultProvider,
+              model: defaultModel,
+              isDefault: true,
+            },
           });
           if (updated) {
             await persistSessionEntry({
@@ -869,7 +884,10 @@ async function agentCommandInternal(
         const store = ensureAuthProfileStore();
         const profile = store.profiles[authProfileId];
         const profileAuthProvider = profile
-          ? resolveProviderIdForAuth(profile.provider, { config: cfg, workspaceDir })
+          ? resolveProviderIdForAuth(profile.provider, {
+              config: cfg,
+              workspaceDir,
+            })
           : undefined;
         const validationHarnessPolicy = resolveAgentHarnessPolicy({
           provider: providerForAuthProfileValidation,
@@ -882,7 +900,10 @@ async function agentCommandInternal(
           provider: providerForAuthProfileValidation,
           harnessRuntime: validationHarnessPolicy.runtime,
         }).map((candidateProvider) =>
-          resolveProviderIdForAuth(candidateProvider, { config: cfg, workspaceDir }),
+          resolveProviderIdForAuth(candidateProvider, {
+            config: cfg,
+            workspaceDir,
+          }),
         );
         if (!profile || !acceptedAuthProviders.includes(profileAuthProvider ?? "")) {
           if (hasExplicitRunOverride) {

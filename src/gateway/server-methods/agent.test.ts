@@ -436,7 +436,11 @@ async function invokeAgent(
     params,
     respond: respond as never,
     context: options?.context ?? makeContext(),
-    req: { type: "req", id: options?.reqId ?? "agent-test-req", method: "agent" },
+    req: {
+      type: "req",
+      id: options?.reqId ?? "agent-test-req",
+      method: "agent",
+    },
     client: options?.client ?? null,
     isWebchatConnect: options?.isWebchatConnect ?? (() => false),
   });
@@ -506,7 +510,9 @@ describe("gateway agent handler", () => {
     let capturedEntry: Record<string, unknown> | undefined;
     mocks.updateSessionStore.mockImplementation(async (_path, updater) => {
       const store: Record<string, unknown> = {
-        "agent:main:main": buildExistingMainStoreEntry({ acp: existingAcpMeta }),
+        "agent:main:main": buildExistingMainStoreEntry({
+          acp: existingAcpMeta,
+        }),
       };
       const result = await updater(store);
       capturedEntry = store["agent:main:main"] as Record<string, unknown>;
@@ -1192,7 +1198,12 @@ describe("gateway agent handler", () => {
           },
         ],
       },
-      { respond, context, reqId: "agent-attachment-parse-stack", flushDispatch: false },
+      {
+        respond,
+        context,
+        reqId: "agent-attachment-parse-stack",
+        flushDispatch: false,
+      },
     );
 
     expect(mocks.agentCommand).not.toHaveBeenCalled();
@@ -1236,7 +1247,9 @@ describe("gateway agent handler", () => {
       },
       {
         reqId: "model-run-raw",
-        client: { connect: { scopes: ["operator.admin"] } } as AgentHandlerArgs["client"],
+        client: {
+          connect: { scopes: ["operator.admin"] },
+        } as AgentHandlerArgs["client"],
       },
     );
 
@@ -1288,7 +1301,9 @@ describe("gateway agent handler", () => {
       },
     );
 
-    const callArgs = await waitForAgentCommandCall<{ senderIsOwner?: boolean }>();
+    const callArgs = await waitForAgentCommandCall<{
+      senderIsOwner?: boolean;
+    }>();
     expect(callArgs.senderIsOwner).toBe(senderIsOwner);
   });
 
@@ -1423,6 +1438,67 @@ describe("gateway agent handler", () => {
     expect(call.cleanupBundleMcpOnRunEnd).toBe(true);
   });
 
+  it("forwards backend-only sessionScopedMcpServers into the runner", async () => {
+    primeMainAgentRun();
+    mocks.agentCommand.mockClear();
+
+    const sessionScopedMcpServers = {
+      autoclaw_node: {
+        transport: "streamable-http",
+        url: "http://127.0.0.1:8123/node/mcp",
+        headers: {
+          Authorization: "Bearer injected",
+          "x-session-key": "${OPENCLAW_MCP_SESSION_KEY}",
+        },
+      },
+    };
+
+    await invokeAgent(
+      {
+        message: "inject scoped mcp",
+        sessionKey: "agent:main:main",
+        idempotencyKey: "test-idem-agent-session-scoped-mcp",
+        sessionScopedMcpServers,
+      } as AgentParams,
+      { reqId: "agent-session-scoped-mcp", client: backendGatewayClient() },
+    );
+
+    const call = await waitForAgentCommandCall<{
+      sessionScopedMcpServers?: unknown;
+    }>();
+    expect(call.sessionScopedMcpServers).toEqual(sessionScopedMcpServers);
+  });
+
+  it("rejects sessionScopedMcpServers from non-backend callers", async () => {
+    primeMainAgentRun();
+    mocks.agentCommand.mockClear();
+    const respond = vi.fn();
+
+    await invokeAgent(
+      {
+        message: "inject scoped mcp",
+        sessionKey: "agent:main:main",
+        idempotencyKey: "test-idem-agent-session-scoped-mcp-reject",
+        sessionScopedMcpServers: {
+          autoclaw_node: {
+            transport: "streamable-http",
+            url: "http://127.0.0.1:8123/node/mcp",
+          },
+        },
+      } as AgentParams,
+      {
+        reqId: "agent-session-scoped-mcp-reject",
+        respond,
+        flushDispatch: false,
+      },
+    );
+
+    expect(mocks.agentCommand).not.toHaveBeenCalled();
+    expectRespondError(respond, {
+      message: "sessionScopedMcpServers is reserved for backend callers.",
+    });
+  });
+
   it.each(
     (["channel", "replyChannel"] as const).flatMap((field) =>
       (["heartbeat", "cron", "webhook", "voice"] as const).map(
@@ -1489,7 +1565,10 @@ describe("gateway agent handler", () => {
         deliver: false,
         idempotencyKey: "exec-approval-followup:req-voice",
       } as AgentParams,
-      { reqId: "exec-approval-followup-voice-1", client: backendGatewayClient() },
+      {
+        reqId: "exec-approval-followup-voice-1",
+        client: backendGatewayClient(),
+      },
     );
 
     const callArgs = await waitForAgentCommandCall<{
@@ -1603,7 +1682,9 @@ describe("gateway agent handler", () => {
       },
       { reqId: "workspace-forwarded-1" },
     );
-    const spawnedCall = await waitForAgentCommandCall<{ workspaceDir?: string }>();
+    const spawnedCall = await waitForAgentCommandCall<{
+      workspaceDir?: string;
+    }>();
     expect(spawnedCall.workspaceDir).toBe("/tmp/inherited");
   });
 
@@ -1690,7 +1771,9 @@ describe("gateway agent handler", () => {
       { reqId: "exec-followup-elevated", client: backendGatewayClient() },
     );
 
-    const callArgs = await waitForAgentCommandCall<{ bashElevated?: unknown }>();
+    const callArgs = await waitForAgentCommandCall<{
+      bashElevated?: unknown;
+    }>();
     expect(callArgs.bashElevated).toEqual(bashElevated);
   });
 
@@ -1758,7 +1841,9 @@ describe("gateway agent handler", () => {
       { reqId: "exec-followup-forged", client: backendGatewayClient() },
     );
 
-    const callArgs = await waitForAgentCommandCall<{ bashElevated?: unknown }>();
+    const callArgs = await waitForAgentCommandCall<{
+      bashElevated?: unknown;
+    }>();
     expect(callArgs).not.toHaveProperty("bashElevated");
   });
 
@@ -1794,10 +1879,15 @@ describe("gateway agent handler", () => {
         idempotencyKey: `exec-approval-followup:req-elevated-75832:elevated:${registration.handoffId}`,
         internalRuntimeHandoffId: registration.handoffId,
       },
-      { reqId: "exec-followup-idempotency-suffix", client: backendGatewayClient() },
+      {
+        reqId: "exec-followup-idempotency-suffix",
+        client: backendGatewayClient(),
+      },
     );
 
-    const callArgs = await waitForAgentCommandCall<{ bashElevated?: unknown }>();
+    const callArgs = await waitForAgentCommandCall<{
+      bashElevated?: unknown;
+    }>();
     expect(callArgs).not.toHaveProperty("bashElevated");
   });
 
@@ -2263,7 +2353,9 @@ describe("gateway agent handler", () => {
       routes: [],
       updatedAtMs: 0,
     });
-    mocks.resolveVoiceWakeRouteByTrigger.mockReturnValue({ sessionKey: "agent:main:voice" });
+    mocks.resolveVoiceWakeRouteByTrigger.mockReturnValue({
+      sessionKey: "agent:main:voice",
+    });
 
     mocks.loadSessionEntry.mockReturnValue({
       cfg: {},
@@ -2305,7 +2397,9 @@ describe("gateway agent handler", () => {
       routes: [],
       updatedAtMs: 0,
     });
-    mocks.resolveVoiceWakeRouteByTrigger.mockReturnValue({ sessionKey: "agent:ghost:main" });
+    mocks.resolveVoiceWakeRouteByTrigger.mockReturnValue({
+      sessionKey: "agent:ghost:main",
+    });
 
     mocks.loadSessionEntry.mockReturnValue({
       cfg: {},
@@ -2348,7 +2442,9 @@ describe("gateway agent handler", () => {
       routes: [],
       updatedAtMs: 0,
     });
-    mocks.resolveVoiceWakeRouteByTrigger.mockReturnValue({ sessionKey: "agent:main:voice" });
+    mocks.resolveVoiceWakeRouteByTrigger.mockReturnValue({
+      sessionKey: "agent:main:voice",
+    });
 
     mocks.loadSessionEntry.mockImplementation((sessionKey: string) => ({
       cfg: {},
@@ -2398,7 +2494,9 @@ describe("gateway agent handler", () => {
       routes: [],
       updatedAtMs: 0,
     });
-    mocks.resolveVoiceWakeRouteByTrigger.mockReturnValue({ sessionKey: "agent:main:voice" });
+    mocks.resolveVoiceWakeRouteByTrigger.mockReturnValue({
+      sessionKey: "agent:main:voice",
+    });
 
     mocks.loadSessionEntry.mockImplementation((sessionKey: string) => ({
       cfg: {},
@@ -2450,7 +2548,9 @@ describe("gateway agent handler", () => {
       routes: [],
       updatedAtMs: 0,
     });
-    mocks.resolveVoiceWakeRouteByTrigger.mockReturnValue({ sessionKey: "agent:main:voice" });
+    mocks.resolveVoiceWakeRouteByTrigger.mockReturnValue({
+      sessionKey: "agent:main:voice",
+    });
 
     mocks.loadSessionEntry.mockImplementation((sessionKey: string) => ({
       cfg: {},
@@ -2497,7 +2597,9 @@ describe("gateway agent handler", () => {
       routes: [],
       updatedAtMs: 0,
     });
-    mocks.resolveVoiceWakeRouteByTrigger.mockReturnValue({ sessionKey: "agent:main:voice" });
+    mocks.resolveVoiceWakeRouteByTrigger.mockReturnValue({
+      sessionKey: "agent:main:voice",
+    });
 
     mocks.loadSessionEntry.mockImplementation((sessionKey: string) => ({
       cfg: {},
@@ -2544,7 +2646,9 @@ describe("gateway agent handler", () => {
       routes: [],
       updatedAtMs: 0,
     });
-    mocks.resolveVoiceWakeRouteByTrigger.mockReturnValue({ sessionKey: "agent:main:voice" });
+    mocks.resolveVoiceWakeRouteByTrigger.mockReturnValue({
+      sessionKey: "agent:main:voice",
+    });
 
     mocks.loadSessionEntry.mockImplementation((sessionKey: string) => ({
       cfg: {},
@@ -2651,7 +2755,9 @@ describe("gateway agent handler", () => {
       },
       {
         reqId: "4",
-        client: { connect: { scopes: ["operator.admin"] } } as AgentHandlerArgs["client"],
+        client: {
+          connect: { scopes: ["operator.admin"] },
+        } as AgentHandlerArgs["client"],
       },
     );
 
@@ -2679,7 +2785,10 @@ describe("gateway agent handler", () => {
         },
       };
       mockSessionResetSuccess({ reason: "new" });
-      primeMainAgentRun({ sessionId: "reset-session-id", cfg: mocks.loadConfigReturn });
+      primeMainAgentRun({
+        sessionId: "reset-session-id",
+        cfg: mocks.loadConfigReturn,
+      });
 
       await invokeAgent(
         {
@@ -2689,7 +2798,9 @@ describe("gateway agent handler", () => {
         },
         {
           reqId: "4-startup",
-          client: { connect: { scopes: ["operator.admin"] } } as AgentHandlerArgs["client"],
+          client: {
+            connect: { scopes: ["operator.admin"] },
+          } as AgentHandlerArgs["client"],
         },
       );
 
@@ -2714,7 +2825,10 @@ describe("gateway agent handler", () => {
         },
       };
       mockSessionResetSuccess({ reason: "new" });
-      primeMainAgentRun({ sessionId: "reset-session-id", cfg: mocks.loadConfigReturn });
+      primeMainAgentRun({
+        sessionId: "reset-session-id",
+        cfg: mocks.loadConfigReturn,
+      });
 
       await invokeAgent(
         {
@@ -2724,7 +2838,9 @@ describe("gateway agent handler", () => {
         },
         {
           reqId: "4-bootstrap",
-          client: { connect: { scopes: ["operator.admin"] } } as AgentHandlerArgs["client"],
+          client: {
+            connect: { scopes: ["operator.admin"] },
+          } as AgentHandlerArgs["client"],
         },
       );
 
@@ -2776,7 +2892,9 @@ describe("gateway agent handler", () => {
               },
               {
                 reqId: "4-bootstrap-spawned",
-                client: { connect: { scopes: ["operator.admin"] } } as AgentHandlerArgs["client"],
+                client: {
+                  connect: { scopes: ["operator.admin"] },
+                } as AgentHandlerArgs["client"],
               },
             );
 
@@ -2829,7 +2947,9 @@ describe("gateway agent handler", () => {
         },
         {
           reqId: "4-bootstrap-subagent",
-          client: { connect: { scopes: ["operator.admin"] } } as AgentHandlerArgs["client"],
+          client: {
+            connect: { scopes: ["operator.admin"] },
+          } as AgentHandlerArgs["client"],
         },
       );
 
@@ -2851,7 +2971,9 @@ describe("gateway agent handler", () => {
             await withTempDir(
               { prefix: "openclaw-gateway-startup-inherited-" },
               async (inheritedWorkspaceDir) => {
-                await fs.mkdir(`${inheritedWorkspaceDir}/memory`, { recursive: true });
+                await fs.mkdir(`${inheritedWorkspaceDir}/memory`, {
+                  recursive: true,
+                });
                 const inheritedMarker = "OC_INHERITED_WORKSPACE_MEMORY_MARKER";
                 await fs.writeFile(
                   `${inheritedWorkspaceDir}/memory/2026-04-27.md`,
@@ -2943,7 +3065,9 @@ describe("gateway agent handler", () => {
       },
       {
         reqId: "4b",
-        client: { connect: { scopes: ["operator.admin"] } } as AgentHandlerArgs["client"],
+        client: {
+          connect: { scopes: ["operator.admin"] },
+        } as AgentHandlerArgs["client"],
       },
     );
 
@@ -2966,7 +3090,10 @@ describe("gateway agent handler", () => {
           },
         };
         mockSessionResetSuccess({ reason: "new" });
-        primeMainAgentRun({ sessionId: "reset-session-id", cfg: mocks.loadConfigReturn });
+        primeMainAgentRun({
+          sessionId: "reset-session-id",
+          cfg: mocks.loadConfigReturn,
+        });
 
         await invokeAgent(
           {
@@ -3025,7 +3152,9 @@ describe("gateway agent handler", () => {
       },
       {
         reqId: "4c",
-        client: { connect: { scopes: ["operator.write"] } } as AgentHandlerArgs["client"],
+        client: {
+          connect: { scopes: ["operator.write"] },
+        } as AgentHandlerArgs["client"],
       },
     );
 
@@ -3050,7 +3179,12 @@ describe("gateway agent handler", () => {
     mocks.loadConfigReturn = {
       agents: {
         defaults: { workspace: "/tmp/workspace" },
-        list: [{ id: "main", identity: { avatar: "/Users/test/private/avatar.png" } }],
+        list: [
+          {
+            id: "main",
+            identity: { avatar: "/Users/test/private/avatar.png" },
+          },
+        ],
       },
     };
 
@@ -3110,7 +3244,9 @@ describe("gateway agent handler", () => {
     const sendPolicyArgs = expectRecordFields(mockCallArg(mocks.resolveSendPolicy), {
       sessionKey: "agent:main:main",
     });
-    expectRecordFields(sendPolicyArgs.entry, { sessionId: "existing-session-id" });
+    expectRecordFields(sendPolicyArgs.entry, {
+      sessionId: "existing-session-id",
+    });
     expect(mocks.agentCommand).not.toHaveBeenCalled();
   });
 
@@ -3123,7 +3259,11 @@ describe("gateway agent handler", () => {
       mocks.loadSessionEntry.mockReturnValue({
         cfg: {},
         storePath: "/tmp/sessions.json",
-        entry: { sessionId: "existing-session-id", updatedAt: Date.now(), ...entry },
+        entry: {
+          sessionId: "existing-session-id",
+          updatedAt: Date.now(),
+          ...entry,
+        },
         canonicalKey: sessionKey,
       });
       let capturedEntry: Record<string, unknown> | undefined;
@@ -3134,7 +3274,10 @@ describe("gateway agent handler", () => {
         await updater(store);
         capturedEntry = store[sessionKey] as Record<string, unknown>;
       });
-      mocks.agentCommand.mockResolvedValue({ payloads: [{ text: "ok" }], meta: { durationMs: 1 } });
+      mocks.agentCommand.mockResolvedValue({
+        payloads: [{ text: "ok" }],
+        meta: { durationMs: 1 },
+      });
       await invokeAgent({
         message: "hi",
         agentId: "main",
