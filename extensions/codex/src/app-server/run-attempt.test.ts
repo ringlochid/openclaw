@@ -537,11 +537,14 @@ describe("runCodexAppServerAttempt", () => {
     vi.stubEnv("OPENCLAW_TRAJECTORY", "0");
     vi.stubEnv("CODEX_API_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "");
+    __testing.resetSessionMcpRuntimeHelpersForTests();
+    __testing.resetOpenClawCodingToolsFactoryForTests();
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-run-"));
   });
 
   afterEach(async () => {
     __testing.resetCodexAppServerClientFactoryForTests();
+    __testing.resetSessionMcpRuntimeHelpersForTests();
     __testing.resetOpenClawCodingToolsFactoryForTests();
     resetCodexRateLimitCacheForTests();
     nativeHookRelayTesting.clearNativeHookRelaysForTests();
@@ -823,6 +826,88 @@ describe("runCodexAppServerAttempt", () => {
     expect(factoryOptions[0]).toMatchObject({
       authProfileStore,
     });
+  });
+
+  it("adds materialized bundle MCP tools to Codex dynamic tools", async () => {
+    const sessionFile = path.join(tempDir, "session.jsonl");
+    const workspaceDir = path.join(tempDir, "workspace");
+    const params = createParams(sessionFile, workspaceDir);
+    params.disableTools = false;
+    params.config = {
+      mcp: {
+        servers: {
+          "autoclaw-operator": {
+            url: "http://127.0.0.1:8123/operator/mcp",
+            transport: "streamable-http",
+          },
+        },
+      },
+    } as EmbeddedRunAttemptParams["config"];
+
+    __testing.setOpenClawCodingToolsFactoryForTests(() => [createRuntimeDynamicTool("message")]);
+    __testing.setSessionMcpRuntimeHelpersForTests({
+      getOrCreateSessionMcpRuntime: (async () => ({ sessionId: "mcp-runtime" })) as never,
+      materializeBundleMcpToolsForRun: (async () => ({
+        runtime: { sessionId: "mcp-runtime" },
+        tools: [createRuntimeDynamicTool("autoclaw-operator__list_runtime_tasks")],
+      })) as never,
+    });
+
+    const tools = await __testing.buildDynamicTools({
+      params,
+      resolvedWorkspace: workspaceDir,
+      effectiveWorkspace: workspaceDir,
+      sandboxSessionKey: params.sessionKey!,
+      sandbox: null as never,
+      runAbortController: new AbortController(),
+      sessionAgentId: "main",
+      pluginConfig: {},
+      onYieldDetected: () => undefined,
+    });
+
+    expect(tools.map((tool) => tool.name)).toContain("message");
+    expect(tools.map((tool) => tool.name)).toContain("autoclaw-operator__list_runtime_tasks");
+  });
+
+  it("filters materialized bundle MCP tools by toolsAllow", async () => {
+    const sessionFile = path.join(tempDir, "session.jsonl");
+    const workspaceDir = path.join(tempDir, "workspace");
+    const params = createParams(sessionFile, workspaceDir);
+    params.disableTools = false;
+    params.toolsAllow = ["message"];
+    params.config = {
+      mcp: {
+        servers: {
+          "autoclaw-operator": {
+            url: "http://127.0.0.1:8123/operator/mcp",
+            transport: "streamable-http",
+          },
+        },
+      },
+    } as EmbeddedRunAttemptParams["config"];
+
+    __testing.setOpenClawCodingToolsFactoryForTests(() => [createRuntimeDynamicTool("message")]);
+    __testing.setSessionMcpRuntimeHelpersForTests({
+      getOrCreateSessionMcpRuntime: (async () => ({ sessionId: "mcp-runtime" })) as never,
+      materializeBundleMcpToolsForRun: (async () => ({
+        runtime: { sessionId: "mcp-runtime" },
+        tools: [createRuntimeDynamicTool("autoclaw-operator__list_runtime_tasks")],
+      })) as never,
+    });
+
+    const tools = await __testing.buildDynamicTools({
+      params,
+      resolvedWorkspace: workspaceDir,
+      effectiveWorkspace: workspaceDir,
+      sandboxSessionKey: params.sessionKey!,
+      sandbox: null as never,
+      runAbortController: new AbortController(),
+      sessionAgentId: "main",
+      pluginConfig: {},
+      onYieldDetected: () => undefined,
+    });
+
+    expect(tools.map((tool) => tool.name)).toEqual(["message"]);
   });
 
   it("normalizes Codex dynamic toolsAllow entries before filtering", () => {

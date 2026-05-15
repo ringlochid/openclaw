@@ -13,10 +13,13 @@ import {
   emitAgentEvent as emitGlobalAgentEvent,
   finalizeHarnessContextEngineTurn,
   formatErrorMessage,
+  getOrCreateSessionMcpRuntime,
   isActiveHarnessContextEngine,
   isSubagentSessionKey,
   loadCodexBundleMcpThreadConfig,
+  materializeBundleMcpToolsForRun,
   normalizeAgentRuntimeTools,
+  applyFinalEffectiveToolPolicy,
   resolveAttemptSpawnWorkspaceDir,
   resolveAgentHarnessBeforePromptBuildResult,
   resolveModelAuthMode,
@@ -185,6 +188,8 @@ type CodexWorkspaceBootstrapContext = CodexBootstrapContext & { instructions?: s
 const testClientFactoryStorage = new AsyncLocalStorage<CodexAppServerClientFactory | undefined>();
 const clientFactory = defaultCodexAppServerClientFactory;
 let openClawCodingToolsFactoryForTests: OpenClawCodingToolsFactory | undefined;
+let getOrCreateSessionMcpRuntimeForTests: typeof getOrCreateSessionMcpRuntime | undefined;
+let materializeBundleMcpToolsForRunForTests: typeof materializeBundleMcpToolsForRun | undefined;
 
 function resolveCodexAppServerClientFactory(): CodexAppServerClientFactory {
   return testClientFactoryStorage.getStore() ?? clientFactory;
@@ -2293,7 +2298,7 @@ async function buildDynamicTools(input: DynamicToolBuildParams) {
     hasInboundImages: (params.images?.length ?? 0) > 0,
   });
   const filteredTools = filterCodexDynamicToolsForAllowlist(visionFilteredTools, params.toolsAllow);
-  return normalizeAgentRuntimeTools({
+  const normalizedCoreTools = normalizeAgentRuntimeTools({
     runtimePlan: params.runtimePlan,
     tools: filteredTools,
     provider: params.provider,
@@ -2304,6 +2309,51 @@ async function buildDynamicTools(input: DynamicToolBuildParams) {
     modelApi: params.model.api,
     model: params.model,
   });
+  if (Object.keys(params.config?.mcp?.servers ?? {}).length === 0) {
+    return normalizedCoreTools;
+  }
+  const getSessionMcpRuntime = getOrCreateSessionMcpRuntimeForTests ?? getOrCreateSessionMcpRuntime;
+  const materializeBundleMcpTools =
+    materializeBundleMcpToolsForRunForTests ?? materializeBundleMcpToolsForRun;
+  const sessionMcpRuntime = await getSessionMcpRuntime({
+    sessionId: params.sessionId,
+    sessionKey: input.sandboxSessionKey,
+    workspaceDir: input.effectiveWorkspace,
+    cfg: params.config,
+  });
+  const materializedBundleMcp = sessionMcpRuntime
+    ? await materializeBundleMcpTools({
+        runtime: sessionMcpRuntime,
+        reservedToolNames: normalizedCoreTools.map((tool) => tool.name),
+      })
+    : undefined;
+  const bundledTools = applyFinalEffectiveToolPolicy({
+    bundledTools: materializedBundleMcp?.tools ?? [],
+    config: params.config,
+    sessionKey: input.sandboxSessionKey,
+    agentId: input.sessionAgentId,
+    modelProvider: params.model.provider,
+    modelId: params.modelId,
+    messageProvider: params.messageChannel ?? params.messageProvider,
+    agentAccountId: params.agentAccountId,
+    groupId: params.groupId,
+    groupChannel: params.groupChannel,
+    groupSpace: params.groupSpace,
+    spawnedBy: params.spawnedBy,
+    senderId: params.senderId,
+    senderName: params.senderName,
+    senderUsername: params.senderUsername,
+    senderE164: params.senderE164,
+    senderIsOwner: params.senderIsOwner,
+    ownerOnlyToolAllowlist: params.ownerOnlyToolAllowlist,
+    warn: (message) => embeddedAgentLog.warn(message),
+  });
+  const codexFilteredBundledTools = filterCodexDynamicTools(bundledTools, input.pluginConfig);
+  const filteredBundledTools = filterCodexDynamicToolsForAllowlist(
+    codexFilteredBundledTools,
+    params.toolsAllow,
+  );
+  return [...normalizedCoreTools, ...filteredBundledTools];
 }
 
 function filterCodexDynamicToolsForAllowlist<T extends { name: string }>(
@@ -3224,6 +3274,17 @@ export const __testing = {
   },
   resetOpenClawCodingToolsFactoryForTests(): void {
     openClawCodingToolsFactoryForTests = undefined;
+  },
+  setSessionMcpRuntimeHelpersForTests(params: {
+    getOrCreateSessionMcpRuntime?: typeof getOrCreateSessionMcpRuntime;
+    materializeBundleMcpToolsForRun?: typeof materializeBundleMcpToolsForRun;
+  }): void {
+    getOrCreateSessionMcpRuntimeForTests = params.getOrCreateSessionMcpRuntime;
+    materializeBundleMcpToolsForRunForTests = params.materializeBundleMcpToolsForRun;
+  },
+  resetSessionMcpRuntimeHelpersForTests(): void {
+    getOrCreateSessionMcpRuntimeForTests = undefined;
+    materializeBundleMcpToolsForRunForTests = undefined;
   },
   setCodexAppServerClientFactoryForTests(factory: CodexAppServerClientFactory): void {
     testClientFactoryStorage.enterWith(factory);
