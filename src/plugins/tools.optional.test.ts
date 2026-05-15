@@ -34,6 +34,7 @@ let ensureStandalonePluginToolRegistryLoaded: typeof import("./tools.js").ensure
 let buildPluginToolMetadataKey: typeof import("./tools.js").buildPluginToolMetadataKey;
 let getPluginToolMeta: typeof import("./tools.js").getPluginToolMeta;
 let resetPluginToolFactoryCache: typeof import("./tools.js").resetPluginToolFactoryCache;
+let getActivePluginChannelRegistry: typeof import("./runtime.js").getActivePluginChannelRegistry;
 let getActivePluginRegistry: typeof import("./runtime.js").getActivePluginRegistry;
 let pinActivePluginChannelRegistry: typeof import("./runtime.js").pinActivePluginChannelRegistry;
 let resetPluginRuntimeStateForTest: typeof import("./runtime.js").resetPluginRuntimeStateForTest;
@@ -438,6 +439,7 @@ describe("resolvePluginTools optional tools", () => {
       resolvePluginTools,
     } = await import("./tools.js"));
     ({
+      getActivePluginChannelRegistry,
       getActivePluginRegistry,
       pinActivePluginChannelRegistry,
       resetPluginRuntimeStateForTest,
@@ -2314,6 +2316,47 @@ describe("resolvePluginTools optional tools", () => {
     expectResolvedToolNames(tools, ["optional_tool"]);
     expect(resolveRuntimePluginRegistryMock).not.toHaveBeenCalled();
     expect(loadOpenClawPluginsMock).not.toHaveBeenCalled();
+  });
+
+  it("does not replace the pinned channel registry during standalone plugin tool loading", () => {
+    const gatewayRegistry = createOptionalDemoActiveRegistry();
+    setActivePluginRegistry(
+      gatewayRegistry as never,
+      "gateway-startup",
+      "gateway-bindable",
+      "/tmp",
+    );
+    pinActivePluginChannelRegistry(gatewayRegistry as never);
+    loadOpenClawPluginsMock.mockReturnValue(
+      createToolRegistry([
+        {
+          pluginId: "memory-core",
+          optional: false,
+          source: "/tmp/memory-core.js",
+          names: ["memory_search"],
+          factory: () => [makeTool("memory_search")],
+        },
+      ]),
+    );
+
+    ensureStandalonePluginToolRegistryLoaded({
+      context: {
+        ...createContext(),
+        config: {
+          plugins: {
+            enabled: true,
+            allow: ["memory-core"],
+            load: { paths: [] },
+            entries: { "memory-core": { enabled: true } },
+            slots: { memory: "memory-core" },
+          },
+        },
+      } as never,
+      toolAllowlist: ["memory_search"],
+      allowGatewaySubagentBinding: true,
+    });
+
+    expect(getActivePluginChannelRegistry()).toBe(gatewayRegistry as never);
   });
 
   it("loads plugin tools when gateway-bindable tool loads have no active registry", () => {

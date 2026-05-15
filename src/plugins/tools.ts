@@ -879,7 +879,10 @@ export function ensureStandalonePluginToolRegistryLoaded(params: {
     return;
   }
   ensureStandaloneRuntimePluginRegistryLoaded({
-    surface: "channel",
+    // Tool discovery must not pin/replace the gateway's channel registry.
+    // Otherwise an unrelated session can clobber live outbound adapters and
+    // break cron/chat delivery for other sessions.
+    surface: "active",
     requiredPluginIds: loadState.onlyPluginIds,
     loadOptions: loadState.loadOptions,
   });
@@ -957,7 +960,7 @@ export function resolvePluginTools(params: {
     // Trigger a standalone load so their tool factories become available, then retry.
     try {
       ensureStandaloneRuntimePluginRegistryLoaded({
-        surface: "channel",
+        surface: "active",
         requiredPluginIds: runtimePluginIds,
         loadOptions,
       });
