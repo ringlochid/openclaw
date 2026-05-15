@@ -1,5 +1,7 @@
 import fs from "node:fs";
+import { resolveModelAgentRuntimeMetadata } from "../../../agents/agent-runtime-metadata.js";
 import { resolveModelRuntimePolicy } from "../../../agents/model-runtime-policy.js";
+import { resolveDefaultModelForAgent } from "../../../agents/model-selection.js";
 import { openAIProviderUsesCodexRuntimeByDefault } from "../../../agents/openai-codex-routing.js";
 import { AGENT_MODEL_CONFIG_KEYS } from "../../../config/model-refs.js";
 import { loadSessionStore, updateSessionStore } from "../../../config/sessions/store.js";
@@ -945,26 +947,120 @@ function formatCodexRouteChange(hit: CodexRouteHit): string {
   return `${hit.path}: ${hit.model} -> ${hit.canonicalModel}.`;
 }
 
+function collectReferencedMcpServerNames(params: {
+  policy: unknown;
+  serverNames: Set<string>;
+  out: Set<string>;
+}): void {
+  const policy = asMutableRecord(params.policy);
+  if (!policy) {
+    return;
+  }
+  for (const key of ["allow", "alsoAllow", "deny"]) {
+    const entries = policy[key];
+    if (!Array.isArray(entries)) {
+      continue;
+    }
+    for (const entry of entries) {
+      if (typeof entry !== "string") {
+        continue;
+      }
+      for (const serverName of params.serverNames) {
+        if (entry.startsWith(`${serverName}__`)) {
+          params.out.add(serverName);
+        }
+      }
+    }
+  }
+  const byProvider = asMutableRecord(policy.byProvider);
+  if (!byProvider) {
+    return;
+  }
+  for (const nested of Object.values(byProvider)) {
+    collectReferencedMcpServerNames({
+      policy: nested,
+      serverNames: params.serverNames,
+      out: params.out,
+    });
+  }
+}
+
+function collectCodexMcpToolRouteWarnings(params: { cfg: OpenClawConfig }): string[] {
+  const configuredServers = Object.keys(params.cfg.mcp?.servers ?? {});
+  if (configuredServers.length === 0) {
+    return [];
+  }
+  const serverNames = new Set(configuredServers);
+  const agents = Array.isArray(params.cfg.agents?.list) ? params.cfg.agents.list : [];
+  const lines: string[] = [];
+  for (const agent of agents) {
+    const agentRecord = asMutableRecord(agent);
+    const agentId = typeof agentRecord?.id === "string" ? agentRecord.id.trim() : "";
+    if (!agentId) {
+      continue;
+    }
+    const referencedServers = new Set<string>();
+    collectReferencedMcpServerNames({
+      policy: agentRecord?.tools,
+      serverNames,
+      out: referencedServers,
+    });
+    if (referencedServers.size === 0) {
+      continue;
+    }
+    const defaultModel = resolveDefaultModelForAgent({ cfg: params.cfg, agentId });
+    const runtime = resolveModelAgentRuntimeMetadata({
+      cfg: params.cfg,
+      agentId,
+      provider: defaultModel.provider,
+      model: defaultModel.model,
+    });
+    if (runtime.id !== "codex") {
+      continue;
+    }
+    const serverList = [...referencedServers].toSorted().join(", ");
+    lines.push(
+      `- agents.list.${agentId}.tools references MCP tool names from mcp.servers (${serverList}__*), but the agent's default model ${defaultModel.provider}/${defaultModel.model} resolves to runtime "codex".`,
+    );
+    lines.push(
+      `- Codex projects cfg.mcp.servers into thread mcp_servers; OpenClaw-owned server__tool names materialize only in embedded Pi runs.`,
+    );
+    lines.push(
+      `- If this agent expects direct server__tool names on the OpenClaw side, pin agents.list.${agentId}.models.${defaultModel.provider}/${defaultModel.model}.agentRuntime.id to "pi".`,
+    );
+  }
+  return lines.length > 0
+    ? [
+        [
+          "- Configured mcp.servers are paired with Codex-routed agents that explicitly reference OpenClaw-owned MCP tool names.",
+          ...lines,
+        ].join("\n"),
+      ]
+    : [];
+}
+
 export function collectCodexRouteWarnings(params: {
   cfg: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
 }): string[] {
   const hits = collectConfigModelRefs(params.cfg, params.env);
-  if (hits.length === 0) {
-    return [];
+  const warnings: string[] = [];
+  if (hits.length > 0) {
+    warnings.push(
+      [
+        "- Legacy `openai-codex/*` model refs should be rewritten to `openai/*`.",
+        ...hits.map(
+          (hit) =>
+            `- ${hit.path}: ${hit.model} should become ${hit.canonicalModel}${
+              hit.runtime ? `; current runtime is "${hit.runtime}"` : ""
+            }.`,
+        ),
+        "- Run `openclaw doctor --fix`: it rewrites configured model refs and stale sessions to `openai/*`, moves Codex intent to provider/model runtime policy, and clears old whole-agent runtime pins.",
+      ].join("\n"),
+    );
   }
-  return [
-    [
-      "- Legacy `openai-codex/*` model refs should be rewritten to `openai/*`.",
-      ...hits.map(
-        (hit) =>
-          `- ${hit.path}: ${hit.model} should become ${hit.canonicalModel}${
-            hit.runtime ? `; current runtime is "${hit.runtime}"` : ""
-          }.`,
-      ),
-      "- Run `openclaw doctor --fix`: it rewrites configured model refs and stale sessions to `openai/*`, moves Codex intent to provider/model runtime policy, and clears old whole-agent runtime pins.",
-    ].join("\n"),
-  ];
+  warnings.push(...collectCodexMcpToolRouteWarnings({ cfg: params.cfg }));
+  return warnings;
 }
 
 export function maybeRepairCodexRoutes(params: {

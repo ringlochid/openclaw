@@ -134,6 +134,80 @@ describe("collectCodexRouteWarnings", () => {
     expect(warnings).toStrictEqual([]);
   });
 
+  it("warns when Codex-routed agents explicitly reference OpenClaw-owned MCP tool names", () => {
+    const warnings = collectCodexRouteWarnings({
+      cfg: {
+        agents: {
+          defaults: {
+            model: "openai/gpt-5.4",
+          },
+          list: [
+            {
+              id: "autoclaw-operator",
+              model: "openai/gpt-5.4",
+              tools: {
+                deny: ["autoclaw-node__record_checkpoint"],
+              },
+            },
+          ],
+        },
+        mcp: {
+          servers: {
+            "autoclaw-node": {
+              url: "http://127.0.0.1:8123/node/mcp",
+            },
+          },
+        },
+      } as OpenClawConfig,
+    });
+
+    expect(warnings).toStrictEqual([
+      [
+        "- Configured mcp.servers are paired with Codex-routed agents that explicitly reference OpenClaw-owned MCP tool names.",
+        '- agents.list.autoclaw-operator.tools references MCP tool names from mcp.servers (autoclaw-node__*), but the agent\'s default model openai/gpt-5.4 resolves to runtime "codex".',
+        "- Codex projects cfg.mcp.servers into thread mcp_servers; OpenClaw-owned server__tool names materialize only in embedded Pi runs.",
+        '- If this agent expects direct server__tool names on the OpenClaw side, pin agents.list.autoclaw-operator.models.openai/gpt-5.4.agentRuntime.id to "pi".',
+      ].join("\n"),
+    ]);
+  });
+
+  it("does not warn for MCP tool-name references when the agent is pinned to Pi", () => {
+    const warnings = collectCodexRouteWarnings({
+      cfg: {
+        agents: {
+          defaults: {
+            model: "openai/gpt-5.4",
+          },
+          list: [
+            {
+              id: "autoclaw-operator",
+              model: "openai/gpt-5.4",
+              models: {
+                "openai/gpt-5.4": {
+                  agentRuntime: {
+                    id: "pi",
+                  },
+                },
+              },
+              tools: {
+                deny: ["autoclaw-node__record_checkpoint"],
+              },
+            },
+          ],
+        },
+        mcp: {
+          servers: {
+            "autoclaw-node": {
+              url: "http://127.0.0.1:8123/node/mcp",
+            },
+          },
+        },
+      } as OpenClawConfig,
+    });
+
+    expect(warnings).toStrictEqual([]);
+  });
+
   it("repairs configured Codex model refs to canonical OpenAI refs with model-scoped Codex runtime", () => {
     const result = maybeRepairCodexRoutes({
       cfg: {
